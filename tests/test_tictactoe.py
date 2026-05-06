@@ -166,6 +166,13 @@ class TestMoveValidation:
         }, CHALLENGER, RESPONDER)
         assert result["error"] is not None
 
+    def test_non_terminal_move_requires_next_turn(self, app):
+        start_game(app)
+        result = app.handle_incoming(SESSION, CMD_MOVE, {
+            "i": 4, "b": "____X____", "n": 1, "t": "", "x": "",
+        }, CHALLENGER, RESPONDER)
+        assert result["error"] is not None
+
     def test_missed_win_claim_rejected(self, app):
         """Board shows a win but terminal is empty."""
         start_game(app)
@@ -341,3 +348,34 @@ class TestOutgoing:
         assert payload["b"] == "____X____"
         assert payload["n"] == 1
         assert payload["i"] == 4
+        assert payload["t"] == "responder"
+
+    def test_challenger_first_move_sets_responder_turn_without_contact(self, app):
+        challenger = "alice"
+        responder = "bob"
+
+        app.handle_outgoing("g1", CMD_CHALLENGE, {}, challenger)
+        app.handle_incoming("g1", CMD_CHALLENGE, {}, challenger, responder)
+
+        accept_payload, _ = app.handle_outgoing("g1", CMD_ACCEPT, {}, responder)
+        accept_result = app.handle_incoming(
+            "g1", CMD_ACCEPT, accept_payload, responder, challenger)
+        assert accept_result["error"] is None
+
+        challenger_session = app._get_session("g1", challenger)
+        assert challenger_session.contact_hash == responder
+        assert challenger_session.metadata["turn"] == challenger
+
+        move_payload, _ = app.handle_outgoing("g1", CMD_MOVE, {"i": 4}, challenger)
+        assert move_payload
+        assert move_payload["t"] == responder
+
+        move_result = app.handle_incoming(
+            "g1", CMD_MOVE, move_payload, challenger, responder)
+        assert move_result["error"] is None
+        responder_session = app._get_session("g1", responder)
+        assert responder_session.metadata["turn"] == responder
+
+        responder_payload, _ = app.handle_outgoing("g1", CMD_MOVE, {"i": 0}, responder)
+        assert responder_payload
+        assert responder_payload["t"] == challenger

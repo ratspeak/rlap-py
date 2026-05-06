@@ -224,6 +224,9 @@ class TicTacToeApp(GameBase):
             return {"session": None, "emit": None,
                     "error": {"code": "protocol_error", "msg": "Unknown session"}}
 
+        if not session.contact_hash:
+            session.contact_hash = sender_hash
+
         SessionStateMachine.apply_command(session, CMD_ACCEPT)
         meta = session.metadata
         meta["board"] = payload.get("b", EMPTY_BOARD)
@@ -404,11 +407,24 @@ class TicTacToeApp(GameBase):
     def _handle_move_out(self, session_id, payload, identity_id):
         session = self._get_session(session_id, identity_id)
         if session is None:
-            return payload, self.render_fallback(CMD_MOVE, payload)
+            return {}, "[LRGP TTT] Session not found"
 
         meta = session.metadata
+        if session.status != STATUS_ACTIVE:
+            return {}, "[LRGP TTT] Session is not active ({})".format(session.status)
+
+        current_turn = meta.get("turn", "")
+        if current_turn != identity_id:
+            return {}, "[LRGP TTT] Not your turn"
+
+        index = payload.get("i")
+        if not isinstance(index, int) or index < 0 or index > 8:
+            return {}, "[LRGP TTT] Invalid cell index"
+
         board = list(meta["board"])
-        index = payload["i"]
+        if index >= len(board) or board[index] != "_":
+            return {}, "[LRGP TTT] Cell {} is already occupied".format(index)
+
         move_num = meta["move_count"] + 1
         marker = _marker_for_move(move_num)
 
@@ -429,9 +445,12 @@ class TicTacToeApp(GameBase):
         else:
             terminal = ""
             winner_hash = ""
-            next_turn = meta.get("first_turn", "") if marker == "O" else session.contact_hash
-            if next_turn == identity_id:
-                next_turn = session.contact_hash
+            first_turn = meta.get("first_turn", "")
+            next_turn = (
+                session.contact_hash if identity_id == first_turn else first_turn
+            )
+            if not next_turn:
+                return {}, "[LRGP TTT] Opponent unknown"
 
         enriched = {
             "i": index,
@@ -485,7 +504,10 @@ class TicTacToeApp(GameBase):
             return False, "Session is not active (status={})".format(session.status)
 
         # 2. Must be sender's turn
-        if meta.get("turn") and meta["turn"] != sender_hash:
+        turn = meta.get("turn", "")
+        if not turn:
+            return False, "Turn is required before moves"
+        if turn != sender_hash:
             return False, "Not your turn"
 
         index = payload.get("i")
@@ -533,5 +555,14 @@ class TicTacToeApp(GameBase):
         else:
             if next_turn == sender_hash:
                 return False, "Turn cannot be the sender after their own move"
+            if not next_turn:
+                return False, "Turn is required on non-terminal move"
+            first_turn = meta.get("first_turn", "")
+            expected_next_turn = (
+                session.identity_id if sender_hash == first_turn else first_turn
+            )
+            if expected_next_turn and next_turn != expected_next_turn:
+                return False, "Turn mismatch: expected {}, got {}".format(
+                    expected_next_turn, next_turn)
 
         return True, None
